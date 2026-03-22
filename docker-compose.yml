@@ -9,4 +9,5 @@ services:
     environment:
       - JELLYSEERR_URL=YOUR_JELLYSEERR_URL_HERE
       - JELLYSEERR_API_KEY=YOUR_API_KEY_HERE
+      - ANIWORLD_URL=http://aniworld-downloader:8080
     restart: unless-stopped
