@@ -26,6 +26,9 @@ TYPE_MAP = {
 }
 
 SETTINGS_FILE = os.getenv("SETTINGS_FILE", "settings.json")
+ANIME_CACHE_FILE = os.getenv("ANIME_CACHE_FILE", "anime_cache.json")
+# Global in-memory cache for anime detection
+_ANIME_CACHE = None
 
 def load_settings() -> Dict[str, Any]:
     if os.path.exists(SETTINGS_FILE):
@@ -36,12 +39,34 @@ def load_settings() -> Dict[str, Any]:
             pass
     return {}
 
+def load_anime_cache() -> Dict[str, bool]:
+    global _ANIME_CACHE
+    if _ANIME_CACHE is not None:
+        return _ANIME_CACHE
+
+    if os.path.exists(ANIME_CACHE_FILE):
+        try:
+            with open(ANIME_CACHE_FILE, "r") as f:
+                _ANIME_CACHE = json.load(f)
+                return _ANIME_CACHE
+        except Exception:
+            pass
+    _ANIME_CACHE = {}
+    return _ANIME_CACHE
+
 def save_settings(settings: Dict[str, Any]):
     dirname = os.path.dirname(SETTINGS_FILE)
     if dirname:
         os.makedirs(dirname, exist_ok=True)
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=4)
+
+def save_anime_cache(cache: Dict[str, bool]):
+    dirname = os.path.dirname(ANIME_CACHE_FILE)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(ANIME_CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=4)
 
 # Jellyseerr request statuses
 # 1 = PENDING, 2 = APPROVED, 3 = DECLINED
@@ -123,27 +148,60 @@ class AniWorldClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.aclose()
 
-async def check_is_anime(client: httpx.AsyncClient, tmdb_id: int, headers: dict, details: dict = None) -> bool:
-    # First check keywords for 'anime' tag
+async def check_is_anime(client: httpx.AsyncClient, tmdb_id: int, tvdb_id: int = None) -> bool:
+    cache = load_anime_cache()
+    tmdb_id_str = str(tmdb_id)
+    if tmdb_id_str in cache:
+        return cache[tmdb_id_str]
+
+    is_anime = None
+
+    # Try TMDB lookup
     try:
-        keyword_res = await client.get(
-            f"{JELLYSEERR_URL.rstrip('/')}/api/v1/tv/{tmdb_id}/keywords",
-            headers=headers,
-            timeout=5.0
+        # We use api.ani.zip to check for MyAnimeList ID mapping
+        # This is a reliable way to identify anime as it maps TMDB/TVDB to MAL
+        res = await client.get(
+            f"https://api.ani.zip/mappings?themoviedb_id={tmdb_id}",
+            timeout=10.0
         )
-        if keyword_res.status_code == 200:
-            keywords = keyword_res.json().get("keywords", [])
-            if any(k.get("name", "").lower() == "anime" for k in keywords):
-                return True
-    except Exception:
-        pass
+        if res.status_code == 200:
+            data = res.json()
+            # If there is a mal_id in mappings, it's an anime
+            if data.get("mappings", {}).get("mal_id"):
+                is_anime = True
+            else:
+                is_anime = False
+        elif res.status_code == 400 or res.status_code == 404:
+            # Explicitly not found/bad request, can be treated as not an anime for this source
+            is_anime = False
+    except Exception as e:
+        print(f"Error checking anime status for TMDB {tmdb_id}: {e}")
 
-    # If tag not found, fallback to Animation genre if details provided
-    if details:
-        genres = details.get("genres", [])
-        if any(g.get("name", "").lower() == "animation" for g in genres):
-            return True
+    # If TMDB failed or didn't find anything, try TVDB if provided
+    if (is_anime is None or is_anime is False) and tvdb_id:
+        try:
+            res = await client.get(
+                f"https://api.ani.zip/mappings?thetvdb_id={tvdb_id}",
+                timeout=10.0
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("mappings", {}).get("mal_id"):
+                    is_anime = True
+                else:
+                    is_anime = False
+            elif res.status_code == 400 or res.status_code == 404:
+                is_anime = False
+        except Exception as e:
+            print(f"Error checking anime status for TVDB {tvdb_id}: {e}")
 
+    # Only cache if we got a definitive answer (True or False)
+    if is_anime is not None:
+        cache[tmdb_id_str] = is_anime
+        save_anime_cache(cache)
+        return is_anime
+
+    # If API call failed, default to False as requested, but don't cache it
     return False
 
 async def fetch_users() -> List[Dict[str, Any]]:
@@ -212,8 +270,8 @@ async def fetch_approved_requests() -> List[Dict[str, Any]]:
                         details = await get_jellyseerr_details(client, media_type, tmdb_id, headers)
                         if details:
                             title = details.get("title") or details.get("name") or details.get("originalName")
-                            if media_type == "tv":
-                                is_anime = await check_is_anime(client, tmdb_id, headers, details)
+                            tvdb_id = details.get("tvdbId")
+                            is_anime = await check_is_anime(client, tmdb_id, tvdb_id)
 
                     if not title or title == "Unknown Title":
                         if req.get("media"):
@@ -293,7 +351,8 @@ async def trigger_download(request_id: int):
             details = await get_jellyseerr_details(js_client, media_type, tmdb_id, headers)
             if details:
                 title = details.get("name") or details.get("originalName")
-                is_anime = await check_is_anime(js_client, tmdb_id, headers, details)
+                tvdb_id = details.get("tvdbId")
+                is_anime = await check_is_anime(js_client, tmdb_id, tvdb_id)
 
         if title == "Unknown Title":
             title = media.get("name") or req_data.get("title") or f"Request {request_id}"
