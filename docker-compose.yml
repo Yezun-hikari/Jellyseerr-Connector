@@ -12,4 +12,7 @@ services:
       - ANIWORLD_URL=http://aniworld-downloader:8080
       - ANIWORLD_USERNAME=YOUR_USERNAME_HERE
       - ANIWORLD_PASSWORD=YOUR_PASSWORD_HERE
+      - SETTINGS_FILE=/app/data/settings.json
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
