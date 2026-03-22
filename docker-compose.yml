@@ -13,6 +13,8 @@ services:
       - ANIWORLD_USERNAME=YOUR_USERNAME_HERE
       - ANIWORLD_PASSWORD=YOUR_PASSWORD_HERE
       - SETTINGS_FILE=/app/data/settings.json
+      - ANIME_MOVIE_PATH=/path/to/anime/movies
+      - POLLING_INTERVAL=60
     volumes:
       - ./data:/app/data
     restart: unless-stopped
