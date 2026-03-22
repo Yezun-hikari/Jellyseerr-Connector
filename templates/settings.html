@@ -18,6 +18,12 @@
     <a href="/">&larr; Zurück</a>
     <h1>Einstellungen - Standard Sprachen</h1>
 
+    {% if error %}
+    <div style="color: red; border: 1px solid red; padding: 10px; margin-bottom: 1rem;">
+        <b>Fehler:</b> {{ error }}
+    </div>
+    {% endif %}
+
     <form id="settingsForm">
         <table>
             <thead>
@@ -28,11 +34,13 @@
                 </tr>
             </thead>
             <tbody>
-                {% for user in users %}
-                {% set user_id = user.id|string %}
+                {% for u in users %}
+                {% set user_id = u['id']|string %}
                 {% set user_settings = settings.get(user_id, {}) %}
                 <tr>
-                    <td>{{ user.displayName or user.email }}</td>
+                    <td>
+                        {{ u['display_name'] }}
+                    </td>
                     <td>
                         <select name="aniworld_{{ user_id }}">
                             <option value="German Dub" {% if user_settings.get('aniworld') == 'German Dub' %}selected{% endif %}>German Dub</option>
@@ -45,6 +53,12 @@
                             <option value="German Dub" {% if user_settings.get('serienstream') == 'German Dub' %}selected{% endif %}>German Dub</option>
                             <option value="English Dub" {% if user_settings.get('serienstream') == 'English Dub' %}selected{% endif %}>English Dub</option>
                         </select>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3" style="text-align: center; padding: 2rem;">
+                        <i>Keine Benutzer gefunden. Stelle sicher, dass die Jellyseerr-API erreichbar ist.</i>
                     </td>
                 </tr>
                 {% endfor %}

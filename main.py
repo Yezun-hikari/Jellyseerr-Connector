@@ -37,6 +37,9 @@ def load_settings() -> Dict[str, Any]:
     return {}
 
 def save_settings(settings: Dict[str, Any]):
+    dirname = os.path.dirname(SETTINGS_FILE)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=4)
 
@@ -150,11 +153,23 @@ async def fetch_users() -> List[Dict[str, Any]]:
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{JELLYSEERR_URL.rstrip('/')}/api/v1/user",
+            params={"take": 100},
             headers=headers,
             timeout=10.0
         )
-        if response.status_code == 200:
-            return response.json()
+        if response.status_code != 200:
+            raise Exception(f"Jellyseerr API error: {response.status_code} - {response.text}")
+
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            # Jellyseerr users endpoint can return either a list or an object with results
+            users = data.get("results") or data.get("users")
+            if users is not None:
+                return users
+            if "id" in data or "email" in data:
+                return [data]
     return []
 
 async def fetch_approved_requests() -> List[Dict[str, Any]]:
@@ -385,8 +400,23 @@ async def index(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     try:
-        users = await fetch_users()
+        raw_users = await fetch_users()
         settings = load_settings()
+
+        users = []
+        for u in raw_users:
+            if not isinstance(u, dict):
+                continue
+            user_id = str(u.get("id") or u.get("userId") or "")
+            if not user_id:
+                continue
+
+            display_name = u.get("displayName") or u.get("username") or u.get("email") or f"User {user_id}"
+            users.append({
+                "id": user_id,
+                "display_name": display_name
+            })
+
         return templates.TemplateResponse(
             request=request,
             name="settings.html",
