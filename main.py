@@ -25,7 +25,7 @@ TYPE_MAP = {
     "tv": "Serie"
 }
 
-SETTINGS_FILE = "settings.json"
+SETTINGS_FILE = os.getenv("SETTINGS_FILE", "settings.json")
 
 def load_settings() -> Dict[str, Any]:
     if os.path.exists(SETTINGS_FILE):
