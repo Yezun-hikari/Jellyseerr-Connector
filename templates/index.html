@@ -28,6 +28,8 @@
                 <th>Titel</th>
                 <th>Typ</th>
                 <th>Status</th>
+                <th>Requested By</th>
+                <th>Seasons</th>
             </tr>
         </thead>
         <tbody>
@@ -37,10 +39,12 @@
                 <td>{{ req.title }}</td>
                 <td>{{ req.type }}</td>
                 <td>{{ req.status }}</td>
+                <td>{{ req.requested_by }}</td>
+                <td>{{ req.seasons }}</td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="4">No approved requests found.</td>
+                <td colspan="6">No approved requests found.</td>
             </tr>
             {% endfor %}
         </tbody>

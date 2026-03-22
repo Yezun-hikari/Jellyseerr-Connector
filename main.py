@@ -88,11 +88,38 @@ async def fetch_approved_requests() -> List[Dict[str, Any]]:
                             # For TV shows, the name is sometimes in 'tv_show_name' if available or just 'title'
                             title = req.get("title") or "Request ID: " + str(req.get("id"))
 
+                    # Extract requested by user
+                    requested_by = "Unknown"
+                    user = req.get("requestedBy")
+                    if user:
+                        requested_by = user.get("displayName") or user.get("username") or user.get("email") or "Unknown"
+
+                    # Handle seasons for TV shows
+                    seasons_display = ""
+                    if media_type == "tv":
+                        requested_seasons = req.get("seasons", [])
+                        requested_season_numbers = sorted([s.get("seasonNumber") for s in requested_seasons if s.get("seasonNumber") is not None])
+
+                        # Check if all available seasons (excluding specials) were requested
+                        available_seasons = media.get("seasons", [])
+                        available_season_numbers = [s.get("seasonNumber") for s in available_seasons if s.get("seasonNumber") is not None and s.get("seasonNumber") > 0]
+
+                        is_all_seasons = False
+                        if requested_season_numbers and available_season_numbers:
+                            is_all_seasons = all(sn in requested_season_numbers for sn in available_season_numbers)
+
+                        if is_all_seasons:
+                            seasons_display = "Seasons: All"
+                        elif requested_season_numbers:
+                            seasons_display = "Seasons: " + ", ".join(map(str, requested_season_numbers))
+
                     all_requests.append({
                         "id": req.get("id"),
                         "title": title,
                         "type": TYPE_MAP.get(media_type, media_type),
-                        "status": "Approved"
+                        "status": "Approved",
+                        "requested_by": requested_by,
+                        "seasons": seasons_display
                     })
 
             if len(requests) < take:
