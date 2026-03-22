@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Approved Requests</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f4f4f4; }
+        .error { color: red; font-weight: bold; border: 1px solid red; padding: 10px; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>Approved Requests</h1>
+
+    {% if error %}
+    <div class="error">
+        Error connecting to Jellyseerr: {{ error }}
+    </div>
+    {% endif %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Titel</th>
+                <th>Typ</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for req in requests %}
+            <tr>
+                <td>{{ req.id }}</td>
+                <td>{{ req.title }}</td>
+                <td>{{ req.type }}</td>
+                <td>{{ req.status }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4">No approved requests found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

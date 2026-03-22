@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  jellyseerr-approved-ui:
+    build: .
+    container_name: jellyseerr-approved-ui
+    ports:
+      - "8000:8000"
+    environment:
+      - JELLYSEERR_URL=YOUR_JELLYSEERR_URL_HERE
+      - JELLYSEERR_API_KEY=YOUR_API_KEY_HERE
+    restart: unless-stopped
