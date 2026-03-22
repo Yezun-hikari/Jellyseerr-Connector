@@ -30,24 +30,70 @@
                 <th>Status</th>
                 <th>Requested By</th>
                 <th>Seasons</th>
+                <th>Aktionen</th>
             </tr>
         </thead>
         <tbody>
             {% for req in requests %}
             <tr>
                 <td>{{ req.id }}</td>
-                <td>{{ req.title }}</td>
+                <td>
+                    {{ req.title }}
+                    {% if req.is_anime %}
+                    <span style="font-size: 0.8em; background: #e0f7fa; color: #00838f; padding: 2px 5px; border-radius: 4px; margin-left: 5px;">Anime</span>
+                    {% endif %}
+                </td>
                 <td>{{ req.type }}</td>
                 <td>{{ req.status }}</td>
                 <td>{{ req.requested_by }}</td>
                 <td>{{ req.seasons }}</td>
+                <td>
+                    {% if req.raw_type == 'tv' %}
+                    <button onclick="triggerDownload({{ req.id }}, this)" style="cursor: pointer;">Download</button>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="6">No approved requests found.</td>
+                <td colspan="7">No approved requests found.</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+
+    <script>
+        async function triggerDownload(requestId, btn) {
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = 'Wird gestartet...';
+
+            try {
+                const response = await fetch(`/api/download/${requestId}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    alert('Fehler: ' + data.error);
+                    btn.disabled = false;
+                    btn.innerText = originalText;
+                } else {
+                    btn.innerText = 'Download gestartet';
+                    btn.style.backgroundColor = '#c8e6c9';
+                    setTimeout(() => {
+                        btn.disabled = false;
+                        btn.innerText = originalText;
+                        btn.style.backgroundColor = '';
+                    }, 5000);
+                }
+            } catch (err) {
+                alert('Netzwerkfehler: ' + err.message);
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+        }
+    </script>
 </body>
 </html>
