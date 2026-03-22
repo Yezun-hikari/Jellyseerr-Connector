@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Einstellungen</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f4f4f4; }
+        .actions { margin-top: 1rem; }
+        button { cursor: pointer; padding: 8px 16px; }
+        .success { color: green; margin-top: 1rem; display: none; }
+    </style>
+</head>
+<body>
+    <a href="/">&larr; Zurück</a>
+    <h1>Einstellungen - Standard Sprachen</h1>
+
+    <form id="settingsForm">
+        <table>
+            <thead>
+                <tr>
+                    <th>Benutzer</th>
+                    <th>AniWorld Sprache</th>
+                    <th>SerienStream Sprache</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                {% set user_id = user.id|string %}
+                {% set user_settings = settings.get(user_id, {}) %}
+                <tr>
+                    <td>{{ user.displayName or user.email }}</td>
+                    <td>
+                        <select name="aniworld_{{ user_id }}">
+                            <option value="German Dub" {% if user_settings.get('aniworld') == 'German Dub' %}selected{% endif %}>German Dub</option>
+                            <option value="German Sub" {% if user_settings.get('aniworld') == 'German Sub' %}selected{% endif %}>German Sub</option>
+                            <option value="English Sub" {% if user_settings.get('aniworld') == 'English Sub' %}selected{% endif %}>English Sub</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select name="serienstream_{{ user_id }}">
+                            <option value="German Dub" {% if user_settings.get('serienstream') == 'German Dub' %}selected{% endif %}>German Dub</option>
+                            <option value="English Dub" {% if user_settings.get('serienstream') == 'English Dub' %}selected{% endif %}>English Dub</option>
+                        </select>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div class="actions">
+            <button type="submit">Speichern</button>
+        </div>
+    </form>
+    <div id="successMsg" class="success">Einstellungen gespeichert!</div>
+
+    <script>
+        document.getElementById('settingsForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const settings = {};
+
+            for (let [key, value] of formData.entries()) {
+                const [type, userId] = key.split('_');
+                if (!settings[userId]) settings[userId] = {};
+                settings[userId][type] = value;
+            }
+
+            const response = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+
+            if (response.ok) {
+                const msg = document.getElementById('successMsg');
+                msg.style.display = 'block';
+                setTimeout(() => msg.style.display = 'none', 3000);
+            } else {
+                alert('Fehler beim Speichern');
+            }
+        };
+    </script>
+</body>
+</html>

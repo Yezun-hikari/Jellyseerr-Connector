@@ -7,6 +7,8 @@ import httpx
 
 app = FastAPI()
 
+import json
+
 # Configuration from environment variables
 JELLYSEERR_URL = os.getenv("JELLYSEERR_URL", "http://localhost:5055")
 JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
@@ -22,6 +24,21 @@ TYPE_MAP = {
     "movie": "Movie",
     "tv": "Serie"
 }
+
+SETTINGS_FILE = "settings.json"
+
+def load_settings() -> Dict[str, Any]:
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_settings(settings: Dict[str, Any]):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=4)
 
 # Jellyseerr request statuses
 # 1 = PENDING, 2 = APPROVED, 3 = DECLINED
@@ -125,6 +142,20 @@ async def check_is_anime(client: httpx.AsyncClient, tmdb_id: int, headers: dict,
             return True
 
     return False
+
+async def fetch_users() -> List[Dict[str, Any]]:
+    headers = {
+        "X-Api-Key": JELLYSEERR_API_KEY
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{JELLYSEERR_URL.rstrip('/')}/api/v1/user",
+            headers=headers,
+            timeout=10.0
+        )
+        if response.status_code == 200:
+            return response.json()
+    return []
 
 async def fetch_approved_requests() -> List[Dict[str, Any]]:
     all_requests = []
@@ -231,6 +262,9 @@ async def trigger_download(request_id: int):
 
         req_data = req_res.json()
         media = req_data.get("media", {})
+        user = req_data.get("requestedBy")
+        user_id = str(user.get("id")) if user else None
+
         media_type = req_data.get("type") or media.get("mediaType")
         tmdb_id = media.get("tmdbId")
 
@@ -251,6 +285,15 @@ async def trigger_download(request_id: int):
 
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
+
+        # 3.1 Get default language for user
+        settings = load_settings()
+        user_settings = settings.get(user_id, {}) if user_id else {}
+        if site == "aniworld":
+            default_lang = user_settings.get("aniworld", "German Dub")
+        else:
+            default_lang = user_settings.get("serienstream", "German Dub")
+
         search_res = await aw_client.request(
             "POST",
             "/api/search",
@@ -307,7 +350,8 @@ async def trigger_download(request_id: int):
             json={
                 "episodes": all_episode_urls,
                 "title": series_title,
-                "series_url": series_url
+                "series_url": series_url,
+                "language": default_lang
             }
         )
 
@@ -320,17 +364,53 @@ async def trigger_download(request_id: int):
 async def index(request: Request):
     try:
         requests_data = await fetch_approved_requests()
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "requests": requests_data,
-            "error": None
-        })
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "requests": requests_data,
+                "error": None
+            }
+        )
     except Exception as e:
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "requests": [],
-            "error": str(e)
-        })
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "requests": [],
+                "error": str(e)
+            }
+        )
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    try:
+        users = await fetch_users()
+        settings = load_settings()
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context={
+                "users": users,
+                "settings": settings,
+                "error": None
+            }
+        )
+    except Exception as e:
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context={
+                "users": [],
+                "settings": {},
+                "error": str(e)
+            }
+        )
+
+@app.post("/api/settings")
+async def update_settings(settings: Dict[str, Any]):
+    save_settings(settings)
+    return {"ok": True}
 
 if __name__ == "__main__":
     import uvicorn
