@@ -11,6 +11,8 @@ app = FastAPI()
 JELLYSEERR_URL = os.getenv("JELLYSEERR_URL", "http://localhost:5055")
 JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
 ANIWORLD_URL = os.getenv("ANIWORLD_URL", "http://aniworld-downloader:8080")
+ANIWORLD_USERNAME = os.getenv("ANIWORLD_USERNAME", "")
+ANIWORLD_PASSWORD = os.getenv("ANIWORLD_PASSWORD", "")
 
 # Template setup
 templates = Jinja2Templates(directory="templates")
@@ -38,6 +40,68 @@ async def get_jellyseerr_details(client: httpx.AsyncClient, media_type: str, tmd
     except Exception:
         pass
     return {}
+
+class AniWorldClient:
+    def __init__(self):
+        self.url = ANIWORLD_URL.rstrip('/')
+        self.username = ANIWORLD_USERNAME
+        self.password = ANIWORLD_PASSWORD
+        self.client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
+        self.logged_in = False
+
+    async def login(self):
+        if not self.username or not self.password:
+            # If no credentials, we just hope it works without auth
+            self.logged_in = True
+            return True
+
+        try:
+            # 1. GET login page to retrieve CSRF token
+            import re
+            login_page_res = await self.client.get(f"{self.url}/login")
+            if login_page_res.status_code != 200:
+                print(f"Could not load login page: {login_page_res.status_code}")
+                return False
+
+            csrf_match = re.search(r'name="csrf_token"\s+value="([^"]+)"', login_page_res.text)
+            csrf_token = csrf_match.group(1) if csrf_match else ""
+
+            # 2. POST login data with CSRF token
+            res = await self.client.post(
+                f"{self.url}/login",
+                data={
+                    "username": self.username,
+                    "password": self.password,
+                    "csrf_token": csrf_token
+                }
+            )
+            # If successful, we should have a session cookie now
+            if res.status_code == 200:
+                self.logged_in = True
+                return True
+        except Exception as e:
+            print(f"Login failed: {e}")
+        return False
+
+    async def request(self, method, path, **kwargs):
+        if not self.logged_in:
+            await self.login()
+
+        full_url = f"{self.url}/{path.lstrip('/')}"
+        res = await self.client.request(method, full_url, **kwargs)
+
+        # If we get a 401, try to log in again and retry once
+        if res.status_code == 401 and self.username and self.password:
+            if await self.login():
+                res = await self.client.request(method, full_url, **kwargs)
+
+        return res
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.client.aclose()
 
 async def check_is_anime(client: httpx.AsyncClient, tmdb_id: int, headers: dict, details: dict = None) -> bool:
     # First check keywords for 'anime' tag
@@ -155,9 +219,9 @@ async def trigger_download(request_id: int):
         "X-Api-Key": JELLYSEERR_API_KEY
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient() as js_client, AniWorldClient() as aw_client:
         # 1. Get request details from Jellyseerr
-        req_res = await client.get(
+        req_res = await js_client.get(
             f"{JELLYSEERR_URL.rstrip('/')}/api/v1/request/{request_id}",
             headers=headers,
             timeout=10.0
@@ -177,23 +241,23 @@ async def trigger_download(request_id: int):
         title = "Unknown Title"
         is_anime = False
         if tmdb_id:
-            details = await get_jellyseerr_details(client, media_type, tmdb_id, headers)
+            details = await get_jellyseerr_details(js_client, media_type, tmdb_id, headers)
             if details:
                 title = details.get("name") or details.get("originalName")
-                is_anime = await check_is_anime(client, tmdb_id, headers, details)
+                is_anime = await check_is_anime(js_client, tmdb_id, headers, details)
 
         if title == "Unknown Title":
             title = media.get("name") or req_data.get("title") or f"Request {request_id}"
 
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
-        search_res = await client.post(
-            f"{ANIWORLD_URL.rstrip('/')}/api/search",
-            json={"keyword": title, "site": site},
-            timeout=10.0
+        search_res = await aw_client.request(
+            "POST",
+            "/api/search",
+            json={"keyword": title, "site": site}
         )
         if search_res.status_code != 200:
-            return {"error": f"Failed to search on {site}"}
+            return {"error": f"Failed to search on {site} (Status: {search_res.status_code})"}
 
         search_data = search_res.json()
         results = search_data.get("results", [])
@@ -208,13 +272,13 @@ async def trigger_download(request_id: int):
         requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
 
         # 5. Fetch available seasons from AniWorld-Downloader
-        seasons_res = await client.get(
-            f"{ANIWORLD_URL.rstrip('/')}/api/seasons",
-            params={"url": series_url},
-            timeout=10.0
+        seasons_res = await aw_client.request(
+            "GET",
+            "/api/seasons",
+            params={"url": series_url}
         )
         if seasons_res.status_code != 200:
-            return {"error": "Failed to fetch seasons from downloader"}
+            return {"error": f"Failed to fetch seasons from downloader (Status: {seasons_res.status_code})"}
 
         available_seasons = seasons_res.json().get("seasons", [])
 
@@ -224,10 +288,10 @@ async def trigger_download(request_id: int):
             season_match = next((s for s in available_seasons if s.get("season_number") == s_num), None)
             if season_match:
                 # Fetch episodes for this season
-                ep_res = await client.get(
-                    f"{ANIWORLD_URL.rstrip('/')}/api/episodes",
-                    params={"url": season_match.get("url")},
-                    timeout=10.0
+                ep_res = await aw_client.request(
+                    "GET",
+                    "/api/episodes",
+                    params={"url": season_match.get("url")}
                 )
                 if ep_res.status_code == 200:
                     ep_data = ep_res.json()
@@ -237,19 +301,18 @@ async def trigger_download(request_id: int):
             return {"error": "No episodes found for the requested seasons"}
 
         # 6. Trigger download
-        download_res = await client.post(
-            f"{ANIWORLD_URL.rstrip('/')}/api/download",
+        download_res = await aw_client.request(
+            "POST",
+            "/api/download",
             json={
                 "episodes": all_episode_urls,
                 "title": series_title,
                 "series_url": series_url
-                # language and provider use defaults as requested
-            },
-            timeout=10.0
+            }
         )
 
         if download_res.status_code != 200:
-            return {"error": "Failed to trigger download in AniWorld-Downloader"}
+            return {"error": f"Failed to trigger download in AniWorld-Downloader (Status: {download_res.status_code})"}
 
         return {"message": "Download started", "queue_id": download_res.json().get("queue_id")}
 
