@@ -37,8 +37,7 @@ async def fetch_approved_requests() -> List[Dict[str, Any]]:
         while True:
             # Jellyseerr API call to fetch requests
             # Documentation: https://api-docs.jellyseerr.dev/#/request/get_request
-            # We filter for 'approved' (status=2) if the API supports it,
-            # otherwise we filter manually.
+            # We filter for 'approved' (status=2) if the API supports it.
             response = await client.get(
                 f"{JELLYSEERR_URL.rstrip('/')}/api/v1/request",
                 params={"take": take, "skip": skip, "filter": "approved"},
@@ -60,18 +59,34 @@ async def fetch_approved_requests() -> List[Dict[str, Any]]:
                 if req.get("status") == STATUS_APPROVED:
                     media = req.get("media", {})
                     media_type = req.get("type") or media.get("mediaType")
+                    tmdb_id = media.get("tmdbId")
 
-                    # Try to get title from the nested media or search results if available
-                    # Jellyseerr requests usually have a 'media' object
                     title = "Unknown Title"
-                    if req.get("media"):
-                        # Sometimes titles are in different places depending on the type
-                        # For brevity, we check common fields
-                        title = req.get("media").get("title") or req.get("media").get("name")
 
+                    # If tmdbId is present, try to fetch the title from the specific media endpoint
+                    if tmdb_id:
+                        endpoint = "movie" if media_type == "movie" else "tv"
+                        try:
+                            detail_res = await client.get(
+                                f"{JELLYSEERR_URL.rstrip('/')}/api/v1/{endpoint}/{tmdb_id}",
+                                headers=headers,
+                                timeout=5.0
+                            )
+                            if detail_res.status_code == 200:
+                                details = detail_res.json()
+                                title = details.get("title") or details.get("name")
+                        except Exception:
+                            # Fallback if detail fetch fails
+                            pass
+
+                    # Fallback title detection from the request object itself
                     if not title or title == "Unknown Title":
-                        # For TV shows, the name is sometimes in 'tv_show_name' if available or just 'title'
-                        title = req.get("title") or "Request ID: " + str(req.get("id"))
+                        if req.get("media"):
+                            title = req.get("media").get("title") or req.get("media").get("name")
+
+                        if not title or title == "Unknown Title":
+                            # For TV shows, the name is sometimes in 'tv_show_name' if available or just 'title'
+                            title = req.get("title") or "Request ID: " + str(req.get("id"))
 
                     all_requests.append({
                         "id": req.get("id"),
