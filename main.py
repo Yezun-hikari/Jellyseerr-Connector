@@ -1,13 +1,27 @@
 import os
+import asyncio
+import json
+import re
 from typing import List, Dict, Any
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import httpx
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: create the polling task
+    polling_task_instance = asyncio.create_task(polling_task())
+    yield
+    # Shutdown: cancel the polling task
+    polling_task_instance.cancel()
+    try:
+        await polling_task_instance
+    except asyncio.CancelledError:
+        pass
 
-import json
+app = FastAPI(lifespan=lifespan)
 
 # Configuration from environment variables
 JELLYSEERR_URL = os.getenv("JELLYSEERR_URL", "http://localhost:5055")
@@ -15,6 +29,8 @@ JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
 ANIWORLD_URL = os.getenv("ANIWORLD_URL", "http://aniworld-downloader:8080")
 ANIWORLD_USERNAME = os.getenv("ANIWORLD_USERNAME", "")
 ANIWORLD_PASSWORD = os.getenv("ANIWORLD_PASSWORD", "")
+ANIME_MOVIE_PATH = os.getenv("ANIME_MOVIE_PATH", "")
+POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "60"))
 
 # Template setup
 templates = Jinja2Templates(directory="templates")
@@ -27,8 +43,26 @@ TYPE_MAP = {
 
 SETTINGS_FILE = os.getenv("SETTINGS_FILE", "settings.json")
 ANIME_CACHE_FILE = os.getenv("ANIME_CACHE_FILE", "anime_cache.json")
+PROCESSED_FILE = os.getenv("PROCESSED_FILE", "processed_requests.json")
+
 # Global in-memory cache for anime detection
 _ANIME_CACHE = None
+
+def load_processed_requests() -> Dict[str, str]:
+    if os.path.exists(PROCESSED_FILE):
+        try:
+            with open(PROCESSED_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_processed_requests(processed: Dict[str, str]):
+    dirname = os.path.dirname(PROCESSED_FILE)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(PROCESSED_FILE, "w") as f:
+        json.dump(processed, f, indent=4)
 
 def load_settings() -> Dict[str, Any]:
     if os.path.exists(SETTINGS_FILE):
@@ -317,8 +351,7 @@ async def fetch_approved_requests() -> List[Dict[str, Any]]:
 
     return all_requests
 
-@app.post("/api/download/{request_id}")
-async def trigger_download(request_id: int):
+async def perform_download(request_id: int) -> Dict[str, Any]:
     headers = {
         "X-Api-Key": JELLYSEERR_API_KEY
     }
@@ -341,21 +374,21 @@ async def trigger_download(request_id: int):
         media_type = req_data.get("type") or media.get("mediaType")
         tmdb_id = media.get("tmdbId")
 
-        if media_type != "tv":
-            return {"error": "Only TV series are supported for download at the moment"}
-
         # 2. Get full details to determine title and genres
         title = "Unknown Title"
         is_anime = False
         if tmdb_id:
             details = await get_jellyseerr_details(js_client, media_type, tmdb_id, headers)
             if details:
-                title = details.get("name") or details.get("originalName")
+                title = details.get("name") or details.get("originalName") or details.get("title")
                 tvdb_id = details.get("tvdbId")
                 is_anime = await check_is_anime(js_client, tmdb_id, tvdb_id)
 
         if title == "Unknown Title":
             title = media.get("name") or req_data.get("title") or f"Request {request_id}"
+
+        if not is_anime and media_type != "tv":
+            return {"error": "Only TV series are supported for non-anime content"}
 
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
@@ -363,8 +396,11 @@ async def trigger_download(request_id: int):
         # 3.1 Get default language for user
         settings = load_settings()
         user_settings = settings.get(user_id, {}) if user_id else {}
-        if site == "aniworld":
-            default_lang = user_settings.get("aniworld", "German Dub")
+        if is_anime:
+            if media_type == "movie":
+                default_lang = user_settings.get("aniworld_movie", "German Dub")
+            else:
+                default_lang = user_settings.get("aniworld", "German Dub")
         else:
             default_lang = user_settings.get("serienstream", "German Dub")
 
@@ -387,6 +423,9 @@ async def trigger_download(request_id: int):
 
         # 4. Get requested seasons
         requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
+        if media_type == "movie":
+            # For movies, we just want everything (usually "Filme" or Staffel 0)
+            requested_seasons = None
 
         # 5. Fetch available seasons from AniWorld-Downloader
         seasons_res = await aw_client.request(
@@ -400,15 +439,27 @@ async def trigger_download(request_id: int):
         available_seasons = seasons_res.json().get("seasons", [])
 
         all_episode_urls = []
-        for s_num in requested_seasons:
-            # Find matching season URL
-            season_match = next((s for s in available_seasons if s.get("season_number") == s_num), None)
-            if season_match:
-                # Fetch episodes for this season
+        if requested_seasons is not None:
+            for s_num in requested_seasons:
+                # Find matching season URL
+                season_match = next((s for s in available_seasons if s.get("season_number") == s_num), None)
+                if season_match:
+                    # Fetch episodes for this season
+                    ep_res = await aw_client.request(
+                        "GET",
+                        "/api/episodes",
+                        params={"url": season_match.get("url")}
+                    )
+                    if ep_res.status_code == 200:
+                        ep_data = ep_res.json()
+                        all_episode_urls.extend([e.get("url") for e in ep_data.get("episodes", [])])
+        else:
+            # Movie or no seasons specified (download all)
+            for season in available_seasons:
                 ep_res = await aw_client.request(
                     "GET",
                     "/api/episodes",
-                    params={"url": season_match.get("url")}
+                    params={"url": season.get("url")}
                 )
                 if ep_res.status_code == 200:
                     ep_data = ep_res.json()
@@ -418,21 +469,71 @@ async def trigger_download(request_id: int):
             return {"error": "No episodes found for the requested seasons"}
 
         # 6. Trigger download
+        payload = {
+            "episodes": all_episode_urls,
+            "title": series_title,
+            "series_url": series_url,
+            "language": default_lang
+        }
+
+        if media_type == "movie" and ANIME_MOVIE_PATH:
+            payload["path"] = ANIME_MOVIE_PATH
+
         download_res = await aw_client.request(
             "POST",
             "/api/download",
-            json={
-                "episodes": all_episode_urls,
-                "title": series_title,
-                "series_url": series_url,
-                "language": default_lang
-            }
+            json=payload
         )
 
         if download_res.status_code != 200:
             return {"error": f"Failed to trigger download in AniWorld-Downloader (Status: {download_res.status_code})"}
 
         return {"message": "Download started", "queue_id": download_res.json().get("queue_id")}
+
+@app.post("/api/download/{request_id}")
+async def trigger_download(request_id: int):
+    result = await perform_download(request_id)
+    return result
+
+async def polling_task():
+    print("Starting polling task...")
+    while True:
+        try:
+            processed = load_processed_requests()
+            headers = {"X-Api-Key": JELLYSEERR_API_KEY}
+
+            async with httpx.AsyncClient() as client:
+                # Fetch approved requests
+                response = await client.get(
+                    f"{JELLYSEERR_URL.rstrip('/')}/api/v1/request",
+                    params={"take": 50, "filter": "approved"},
+                    headers=headers,
+                    timeout=10.0
+                )
+
+                if response.status_code == 200:
+                    requests = response.json().get("results", [])
+                    for req in requests:
+                        req_id = str(req.get("id"))
+                        if req_id not in processed:
+                            # Try to download
+                            print(f"Automatically triggering download for request {req_id}")
+                            result = await perform_download(int(req_id))
+                            if "error" in result:
+                                print(f"Failed auto-download for {req_id}: {result['error']}")
+                                # Mark as failed to avoid retrying every time
+                                processed[req_id] = "failed"
+                            else:
+                                print(f"Successfully triggered auto-download for {req_id}")
+                                processed[req_id] = "success"
+                            save_processed_requests(processed)
+                else:
+                    print(f"Polling: Failed to fetch requests: {response.status_code}")
+        except Exception as e:
+            print(f"Polling task error: {e}")
+
+        await asyncio.sleep(POLLING_INTERVAL)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
