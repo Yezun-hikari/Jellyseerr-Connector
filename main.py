@@ -348,14 +348,14 @@ async def trigger_download(request_id: int):
         if tmdb_id:
             details = await get_jellyseerr_details(js_client, media_type, tmdb_id, headers)
             if details:
-                title = details.get("name") or details.get("originalName")
+                title = details.get("title") or details.get("name") or details.get("originalName") or "Unknown Title"
                 tvdb_id = details.get("tvdbId")
                 is_anime = await check_is_anime(js_client, tmdb_id, tvdb_id)
 
         is_movie = (media_type == "movie")
 
-        if title == "Unknown Title":
-            title = media.get("name") or req_data.get("title") or f"Request {request_id}"
+        if not title or title == "Unknown Title":
+            title = media.get("title") or media.get("name") or req_data.get("title") or f"Request {request_id}"
 
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
