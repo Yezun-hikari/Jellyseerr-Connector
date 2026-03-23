@@ -55,11 +55,7 @@
                 <td>{{ req.requested_by }}</td>
                 <td>{{ req.seasons }}</td>
                 <td>
-                    {% if req.raw_type == 'tv' %}
                     <button onclick="triggerDownload({{ req.id }}, this)" style="cursor: pointer;">Download</button>
-                    {% else %}
-                    -
-                    {% endif %}
                 </td>
             </tr>
             {% else %}

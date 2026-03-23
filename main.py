@@ -15,6 +15,7 @@ JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
 ANIWORLD_URL = os.getenv("ANIWORLD_URL", "http://aniworld-downloader:8080")
 ANIWORLD_USERNAME = os.getenv("ANIWORLD_USERNAME", "")
 ANIWORLD_PASSWORD = os.getenv("ANIWORLD_PASSWORD", "")
+ANIME_MOVIE_PATH = os.getenv("ANIME_MOVIE_PATH", "")
 
 # Template setup
 templates = Jinja2Templates(directory="templates")
@@ -341,24 +342,26 @@ async def trigger_download(request_id: int):
         media_type = req_data.get("type") or media.get("mediaType")
         tmdb_id = media.get("tmdbId")
 
-        if media_type != "tv":
-            return {"error": "Only TV series are supported for download at the moment"}
-
         # 2. Get full details to determine title and genres
         title = "Unknown Title"
         is_anime = False
         if tmdb_id:
             details = await get_jellyseerr_details(js_client, media_type, tmdb_id, headers)
             if details:
-                title = details.get("name") or details.get("originalName")
+                title = details.get("title") or details.get("name") or details.get("originalName") or "Unknown Title"
                 tvdb_id = details.get("tvdbId")
                 is_anime = await check_is_anime(js_client, tmdb_id, tvdb_id)
 
-        if title == "Unknown Title":
-            title = media.get("name") or req_data.get("title") or f"Request {request_id}"
+        is_movie = (media_type == "movie")
+
+        if not title or title == "Unknown Title":
+            title = media.get("title") or media.get("name") or req_data.get("title") or f"Request {request_id}"
 
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
+
+        if not is_anime and is_movie:
+            return {"error": "Non-anime movies are not supported for download."}
 
         # 3.1 Get default language for user
         settings = load_settings()
@@ -385,10 +388,7 @@ async def trigger_download(request_id: int):
         series_url = results[0].get("url")
         series_title = results[0].get("title")
 
-        # 4. Get requested seasons
-        requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
-
-        # 5. Fetch available seasons from AniWorld-Downloader
+        # 4. Fetch available seasons from AniWorld-Downloader
         seasons_res = await aw_client.request(
             "GET",
             "/api/seasons",
@@ -398,6 +398,13 @@ async def trigger_download(request_id: int):
             return {"error": f"Failed to fetch seasons from downloader (Status: {seasons_res.status_code})"}
 
         available_seasons = seasons_res.json().get("seasons", [])
+
+        # 5. Determine which seasons to download
+        if is_movie:
+            # For movies, we try to download all available seasons/specials
+            requested_seasons = [s.get("season_number") for s in available_seasons]
+        else:
+            requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
 
         all_episode_urls = []
         for s_num in requested_seasons:
@@ -418,15 +425,40 @@ async def trigger_download(request_id: int):
             return {"error": "No episodes found for the requested seasons"}
 
         # 6. Trigger download
+        payload = {
+            "episodes": all_episode_urls,
+            "title": series_title,
+            "series_url": series_url,
+            "language": default_lang
+        }
+
+        # Handle custom path for anime movies
+        if is_anime and is_movie and ANIME_MOVIE_PATH:
+            # Check if the custom path exists in AniWorld-Downloader
+            cp_res = await aw_client.request("GET", "/api/custom-paths")
+            if cp_res.status_code == 200:
+                custom_paths = cp_res.json().get("paths", [])
+                # Normalize paths for comparison (remove trailing slashes)
+                norm_target = ANIME_MOVIE_PATH.rstrip('/')
+                target_cp = next((cp for cp in custom_paths if cp.get("path", "").rstrip('/') == norm_target), None)
+
+                if not target_cp:
+                    # Register the custom path
+                    print(f"Registering custom path: {ANIME_MOVIE_PATH}")
+                    add_cp_res = await aw_client.request(
+                        "POST",
+                        "/api/custom-paths",
+                        json={"name": "Anime Movies", "path": ANIME_MOVIE_PATH}
+                    )
+                    if add_cp_res.status_code == 200:
+                        payload["custom_path_id"] = add_cp_res.json().get("id")
+                else:
+                    payload["custom_path_id"] = target_cp.get("id")
+
         download_res = await aw_client.request(
             "POST",
             "/api/download",
-            json={
-                "episodes": all_episode_urls,
-                "title": series_title,
-                "series_url": series_url,
-                "language": default_lang
-            }
+            json=payload
         )
 
         if download_res.status_code != 200:
