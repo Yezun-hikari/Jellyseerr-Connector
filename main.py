@@ -360,6 +360,9 @@ async def trigger_download(request_id: int):
         # 3. Search on AniWorld/S.to
         site = "aniworld" if is_anime else "sto"
 
+        if not is_anime and is_movie:
+            return {"error": "Non-anime movies are not supported for download."}
+
         # 3.1 Get default language for user
         settings = load_settings()
         user_settings = settings.get(user_id, {}) if user_id else {}
@@ -385,15 +388,7 @@ async def trigger_download(request_id: int):
         series_url = results[0].get("url")
         series_title = results[0].get("title")
 
-        # 4. Get requested seasons
-        if is_movie:
-            # For movies, we try to find season 0 which usually contains movies on AniWorld
-            # or we just download all available episodes if it's a direct movie link
-            requested_seasons = [0]
-        else:
-            requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
-
-        # 5. Fetch available seasons from AniWorld-Downloader
+        # 4. Fetch available seasons from AniWorld-Downloader
         seasons_res = await aw_client.request(
             "GET",
             "/api/seasons",
@@ -403,6 +398,13 @@ async def trigger_download(request_id: int):
             return {"error": f"Failed to fetch seasons from downloader (Status: {seasons_res.status_code})"}
 
         available_seasons = seasons_res.json().get("seasons", [])
+
+        # 5. Determine which seasons to download
+        if is_movie:
+            # For movies, we try to download all available seasons/specials
+            requested_seasons = [s.get("season_number") for s in available_seasons]
+        else:
+            requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
 
         all_episode_urls = []
         for s_num in requested_seasons:
@@ -430,18 +432,19 @@ async def trigger_download(request_id: int):
             "language": default_lang
         }
 
-        # Handle custom path for anime movies and movies
-        if (is_anime or site == "sto") and is_movie and ANIME_MOVIE_PATH:
+        # Handle custom path for anime movies
+        if is_anime and is_movie and ANIME_MOVIE_PATH:
             # Check if the custom path exists in AniWorld-Downloader
             cp_res = await aw_client.request("GET", "/api/custom-paths")
             if cp_res.status_code == 200:
                 custom_paths = cp_res.json().get("paths", [])
-                # Use name comparison as we don't know if IDs are stable
-                # Or better, check if the path itself is already registered
-                target_cp = next((cp for cp in custom_paths if cp.get("path") == ANIME_MOVIE_PATH), None)
+                # Normalize paths for comparison (remove trailing slashes)
+                norm_target = ANIME_MOVIE_PATH.rstrip('/')
+                target_cp = next((cp for cp in custom_paths if cp.get("path", "").rstrip('/') == norm_target), None)
 
                 if not target_cp:
                     # Register the custom path
+                    print(f"Registering custom path: {ANIME_MOVIE_PATH}")
                     add_cp_res = await aw_client.request(
                         "POST",
                         "/api/custom-paths",
