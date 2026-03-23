@@ -367,7 +367,10 @@ async def trigger_download(request_id: int):
         settings = load_settings()
         user_settings = settings.get(user_id, {}) if user_id else {}
         if site == "aniworld":
-            default_lang = user_settings.get("aniworld", "German Dub")
+            if is_movie:
+                default_lang = user_settings.get("aniworld_movie", "German Dub")
+            else:
+                default_lang = user_settings.get("aniworld", "German Dub")
         else:
             default_lang = user_settings.get("serienstream", "German Dub")
 
