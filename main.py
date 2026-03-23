@@ -15,6 +15,7 @@ JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
 ANIWORLD_URL = os.getenv("ANIWORLD_URL", "http://aniworld-downloader:8080")
 ANIWORLD_USERNAME = os.getenv("ANIWORLD_USERNAME", "")
 ANIWORLD_PASSWORD = os.getenv("ANIWORLD_PASSWORD", "")
+ANIME_MOVIE_PATH = os.getenv("ANIME_MOVIE_PATH", "")
 
 # Template setup
 templates = Jinja2Templates(directory="templates")
@@ -341,9 +342,6 @@ async def trigger_download(request_id: int):
         media_type = req_data.get("type") or media.get("mediaType")
         tmdb_id = media.get("tmdbId")
 
-        if media_type != "tv":
-            return {"error": "Only TV series are supported for download at the moment"}
-
         # 2. Get full details to determine title and genres
         title = "Unknown Title"
         is_anime = False
@@ -353,6 +351,8 @@ async def trigger_download(request_id: int):
                 title = details.get("name") or details.get("originalName")
                 tvdb_id = details.get("tvdbId")
                 is_anime = await check_is_anime(js_client, tmdb_id, tvdb_id)
+
+        is_movie = (media_type == "movie")
 
         if title == "Unknown Title":
             title = media.get("name") or req_data.get("title") or f"Request {request_id}"
@@ -386,7 +386,12 @@ async def trigger_download(request_id: int):
         series_title = results[0].get("title")
 
         # 4. Get requested seasons
-        requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
+        if is_movie:
+            # For movies, we try to find season 0 which usually contains movies on AniWorld
+            # or we just download all available episodes if it's a direct movie link
+            requested_seasons = [0]
+        else:
+            requested_seasons = [s.get("seasonNumber") for s in req_data.get("seasons", [])]
 
         # 5. Fetch available seasons from AniWorld-Downloader
         seasons_res = await aw_client.request(
@@ -418,15 +423,39 @@ async def trigger_download(request_id: int):
             return {"error": "No episodes found for the requested seasons"}
 
         # 6. Trigger download
+        payload = {
+            "episodes": all_episode_urls,
+            "title": series_title,
+            "series_url": series_url,
+            "language": default_lang
+        }
+
+        # Handle custom path for anime movies and movies
+        if (is_anime or site == "sto") and is_movie and ANIME_MOVIE_PATH:
+            # Check if the custom path exists in AniWorld-Downloader
+            cp_res = await aw_client.request("GET", "/api/custom-paths")
+            if cp_res.status_code == 200:
+                custom_paths = cp_res.json().get("paths", [])
+                # Use name comparison as we don't know if IDs are stable
+                # Or better, check if the path itself is already registered
+                target_cp = next((cp for cp in custom_paths if cp.get("path") == ANIME_MOVIE_PATH), None)
+
+                if not target_cp:
+                    # Register the custom path
+                    add_cp_res = await aw_client.request(
+                        "POST",
+                        "/api/custom-paths",
+                        json={"name": "Anime Movies", "path": ANIME_MOVIE_PATH}
+                    )
+                    if add_cp_res.status_code == 200:
+                        payload["custom_path_id"] = add_cp_res.json().get("id")
+                else:
+                    payload["custom_path_id"] = target_cp.get("id")
+
         download_res = await aw_client.request(
             "POST",
             "/api/download",
-            json={
-                "episodes": all_episode_urls,
-                "title": series_title,
-                "series_url": series_url,
-                "language": default_lang
-            }
+            json=payload
         )
 
         if download_res.status_code != 200:
