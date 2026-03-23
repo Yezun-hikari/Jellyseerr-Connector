@@ -30,6 +30,7 @@
                 <tr>
                     <th>Benutzer</th>
                     <th>AniWorld Sprache</th>
+                    <th>Anime Movie Sprache</th>
                     <th>SerienStream Sprache</th>
                 </tr>
             </thead>
@@ -49,6 +50,13 @@
                         </select>
                     </td>
                     <td>
+                        <select name="aniworld_movie_{{ user_id }}">
+                            <option value="German Dub" {% if user_settings.get('aniworld_movie') == 'German Dub' %}selected{% endif %}>German Dub</option>
+                            <option value="German Sub" {% if user_settings.get('aniworld_movie') == 'German Sub' %}selected{% endif %}>German Sub</option>
+                            <option value="English Sub" {% if user_settings.get('aniworld_movie') == 'English Sub' %}selected{% endif %}>English Sub</option>
+                        </select>
+                    </td>
+                    <td>
                         <select name="serienstream_{{ user_id }}">
                             <option value="German Dub" {% if user_settings.get('serienstream') == 'German Dub' %}selected{% endif %}>German Dub</option>
                             <option value="English Dub" {% if user_settings.get('serienstream') == 'English Dub' %}selected{% endif %}>English Dub</option>
@@ -57,7 +65,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="3" style="text-align: center; padding: 2rem;">
+                    <td colspan="4" style="text-align: center; padding: 2rem;">
                         <i>Keine Benutzer gefunden. Stelle sicher, dass die Jellyseerr-API erreichbar ist.</i>
                     </td>
                 </tr>
@@ -77,7 +85,10 @@
             const settings = {};
 
             for (let [key, value] of formData.entries()) {
-                const [type, userId] = key.split('_');
+                const lastUnderscoreIndex = key.lastIndexOf('_');
+                const type = key.substring(0, lastUnderscoreIndex);
+                const userId = key.substring(lastUnderscoreIndex + 1);
+
                 if (!settings[userId]) settings[userId] = {};
                 settings[userId][type] = value;
             }
